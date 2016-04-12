@@ -34,6 +34,7 @@
 #include <linux/random.h>
 #include <linux/scatterlist.h>
 #include <linux/spinlock_types.h>
+#include <linux/namei.h>
 
 #include "ext4_extents.h"
 #include "xattr.h"
