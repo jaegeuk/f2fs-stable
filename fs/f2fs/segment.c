@@ -470,7 +470,8 @@ void f2fs_balance_fs(struct f2fs_sb_info *sbi, bool need)
 	 * We should do GC or end up with checkpoint, if there are so many dirty
 	 * dir/node pages without enough free segments.
 	 */
-	if (has_not_enough_free_secs(sbi, 0, 0)) {
+	if (has_not_enough_free_secs(sbi, 0, 0) &&
+			!test_opt(sbi, FORCE_USER)) {
 		mutex_lock(&sbi->gc_mutex);
 		f2fs_gc(sbi, false, false, NULL_SEGNO);
 	}
@@ -507,8 +508,10 @@ void f2fs_balance_fs_bg(struct f2fs_sb_info *sbi)
 			sync_dirty_inodes(sbi, FILE_INODE);
 			blk_finish_plug(&plug);
 		}
-		f2fs_sync_fs(sbi->sb, true);
-		stat_inc_bg_cp_count(sbi->stat_info);
+		if (!test_opt(sbi, FORCE_USER)) {
+			f2fs_sync_fs(sbi->sb, true);
+			stat_inc_bg_cp_count(sbi->stat_info);
+		}
 	}
 }
 

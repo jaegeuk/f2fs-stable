@@ -153,6 +153,8 @@ static inline enum cp_reason_type need_do_checkpoint(struct inode *inode)
 		cp_reason = CP_NON_REGULAR;
 	else if (inode->i_nlink != 1)
 		cp_reason = CP_HARDLINK;
+	else if (test_opt(sbi, FORCE_USER))
+		cp_reason = CP_FORCE_USER;
 	else if (is_sbi_flag_set(sbi, SBI_NEED_CP))
 		cp_reason = CP_SB_NEED_CP;
 	else if (file_wrong_pino(inode))
