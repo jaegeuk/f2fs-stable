@@ -1289,7 +1289,7 @@ static struct page *last_fsync_dnode(struct f2fs_sb_info *sbi, nid_t ino)
 
 			if (!IS_DNODE(page) || !is_cold_node(page))
 				continue;
-			if (ino_of_node(page) != ino)
+			if (ino && ino_of_node(page) != ino)
 				continue;
 
 			lock_page(page);
@@ -1299,7 +1299,7 @@ continue_unlock:
 				unlock_page(page);
 				continue;
 			}
-			if (ino_of_node(page) != ino)
+			if (ino && ino_of_node(page) != ino)
 				goto continue_unlock;
 
 			if (!PageDirty(page)) {
@@ -1568,16 +1568,25 @@ out:
 }
 
 int sync_node_pages(struct f2fs_sb_info *sbi, struct writeback_control *wbc,
-				bool do_balance, enum iostat_type io_type)
+			bool do_balance, int level, enum iostat_type io_type)
 {
 	pgoff_t index, end;
 	struct pagevec pvec;
-	int step = 0;
+	struct page *last_page = NULL;
+	int step = level;
+	bool marked = false;
 	int nwritten = 0;
 	int ret = 0;
 
 	pagevec_init(&pvec, 0);
 
+	if (level && test_opt(sbi, FORCE_USER)) {
+		last_page = last_fsync_dnode(sbi, 0);
+		if (IS_ERR_OR_NULL(last_page)) {
+			f2fs_msg(sbi->sb, KERN_NOTICE, "No forward mark!!!!");
+			return PTR_ERR_OR_ZERO(last_page);
+		}
+	}
 next_step:
 	index = 0;
 	end = ULONG_MAX;
@@ -1618,7 +1627,7 @@ continue_unlock:
 				continue;
 			}
 
-			if (!PageDirty(page)) {
+			if (!PageDirty(page) && page != last_page) {
 				/* someone wrote it for us */
 				goto continue_unlock;
 			}
@@ -1638,14 +1647,21 @@ continue_unlock:
 				goto continue_unlock;
 
 			set_fsync_mark(page, 0);
-			set_dentry_mark(page, 0);
+			set_dentry_mark(page, page == last_page ? 1 : 0);
 
-			ret = __write_node_page(page, false, &submitted,
+			ret = __write_node_page(page, page == last_page,
+						&submitted,
 						wbc, do_balance, io_type);
 			if (ret)
 				unlock_page(page);
 			else if (submitted)
 				nwritten++;
+
+			if (page == last_page) {
+				f2fs_put_page(page, 0);
+				marked = true;
+				break;
+			}
 
 			if (--wbc->nr_to_write == 0)
 				break;
@@ -1657,6 +1673,8 @@ continue_unlock:
 			step = 2;
 			break;
 		}
+		if (marked)
+			break;
 	}
 
 	if (step < 2) {
@@ -1664,6 +1682,16 @@ continue_unlock:
 		goto next_step;
 	}
 
+	if (!ret && last_page && !marked) {
+		f2fs_msg(sbi->sb, KERN_DEBUG,
+			"Retry to write forward_sync mark: idx=%lx",
+					last_page->index);
+		lock_page(last_page);
+		f2fs_wait_on_page_writeback(last_page, NODE, true);
+		set_page_dirty(last_page);
+		unlock_page(last_page);
+		goto next_step;
+	}
 	if (nwritten)
 		f2fs_submit_merged_write(sbi, NODE);
 
@@ -1733,7 +1761,7 @@ static int f2fs_write_node_pages(struct address_space *mapping,
 	diff = nr_pages_to_write(sbi, NODE, wbc);
 	wbc->sync_mode = WB_SYNC_NONE;
 	blk_start_plug(&plug);
-	sync_node_pages(sbi, wbc, true, FS_NODE_IO);
+	sync_node_pages(sbi, wbc, true, 0, FS_NODE_IO);
 	blk_finish_plug(&plug);
 	wbc->nr_to_write = max((long)0, wbc->nr_to_write - diff);
 	return 0;
