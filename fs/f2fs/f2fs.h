@@ -306,6 +306,7 @@ struct discard_cmd {
 	struct list_head list;		/* command list */
 	struct completion wait;		/* compleation */
 	struct block_device *bdev;	/* bdev */
+	unsigned short ref;		/* reference count */
 	int state;			/* state */
 	int error;			/* bio error */
 };
