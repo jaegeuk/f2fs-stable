@@ -365,6 +365,26 @@ static int upgrade_mode(struct dm_dev_internal *dd, fmode_t new_mode,
 }
 
 /*
+ * Convert the path to a device
+ */
+dev_t dm_get_dev_t(const char *path)
+{
+	dev_t uninitialized_var(dev);
+	struct block_device *bdev;
+
+	bdev = lookup_bdev(path);
+	if (IS_ERR(bdev))
+		dev = name_to_dev_t(path);
+	else {
+		dev = bdev->bd_dev;
+		bdput(bdev);
+	}
+
+	return dev;
+}
+EXPORT_SYMBOL_GPL(dm_get_dev_t);
+
+/*
  * Add a device to the list, or just increment the usage count if
  * it's already present.
  */
@@ -372,23 +392,15 @@ int dm_get_device(struct dm_target *ti, const char *path, fmode_t mode,
 		  struct dm_dev **result)
 {
 	int r;
-	dev_t uninitialized_var(dev);
+	dev_t dev;
 	struct dm_dev_internal *dd;
 	struct dm_table *t = ti->table;
-	struct block_device *bdev;
 
 	BUG_ON(!t);
 
-	/* convert the path to a device */
-	bdev = lookup_bdev(path);
-	if (IS_ERR(bdev)) {
-		dev = name_to_dev_t(path);
-		if (!dev)
-			return -ENODEV;
-	} else {
-		dev = bdev->bd_dev;
-		bdput(bdev);
-	}
+	dev = dm_get_dev_t(path);
+	if (!dev)
+		return -ENODEV;
 
 	dd = find_device(&t->devices, dev);
 	if (!dd) {
@@ -688,37 +700,32 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 
 	tgt->type = dm_get_target_type(type);
 	if (!tgt->type) {
-		DMERR("%s: %s: unknown target type", dm_device_name(t->md),
-		      type);
+		DMERR("%s: %s: unknown target type", dm_device_name(t->md), type);
 		return -EINVAL;
 	}
 
 	if (dm_target_needs_singleton(tgt->type)) {
 		if (t->num_targets) {
-			DMERR("%s: target type %s must appear alone in table",
-			      dm_device_name(t->md), type);
-			return -EINVAL;
+			tgt->error = "singleton target type must appear alone in table";
+			goto bad;
 		}
 		t->singleton = 1;
 	}
 
 	if (dm_target_always_writeable(tgt->type) && !(t->mode & FMODE_WRITE)) {
-		DMERR("%s: target type %s may not be included in read-only tables",
-		      dm_device_name(t->md), type);
-		return -EINVAL;
+		tgt->error = "target type may not be included in a read-only table";
+		goto bad;
 	}
 
 	if (t->immutable_target_type) {
 		if (t->immutable_target_type != tgt->type) {
-			DMERR("%s: immutable target type %s cannot be mixed with other target types",
-			      dm_device_name(t->md), t->immutable_target_type->name);
-			return -EINVAL;
+			tgt->error = "immutable target type cannot be mixed with other target types";
+			goto bad;
 		}
 	} else if (dm_target_is_immutable(tgt->type)) {
 		if (t->num_targets) {
-			DMERR("%s: immutable target type %s cannot be mixed with other target types",
-			      dm_device_name(t->md), tgt->type->name);
-			return -EINVAL;
+			tgt->error = "immutable target type cannot be mixed with other target types";
+			goto bad;
 		}
 		t->immutable_target_type = tgt->type;
 	}
@@ -733,7 +740,6 @@ int dm_table_add_target(struct dm_table *t, const char *type,
 	 */
 	if (!adjoin(t, tgt)) {
 		tgt->error = "Gap in table";
-		r = -EINVAL;
 		goto bad;
 	}
 

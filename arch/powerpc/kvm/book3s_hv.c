@@ -210,6 +210,12 @@ static void kvmppc_core_vcpu_put_hv(struct kvm_vcpu *vcpu)
 
 static void kvmppc_set_msr_hv(struct kvm_vcpu *vcpu, u64 msr)
 {
+	/*
+	 * Check for illegal transactional state bit combination
+	 * and if we find it, force the TS field to a safe state.
+	 */
+	if ((msr & MSR_TS_MASK) == MSR_TS_MASK)
+		msr &= ~MSR_TS_MASK;
 	vcpu->arch.shregs.msr = msr;
 	kvmppc_end_cede(vcpu);
 }
@@ -1165,6 +1171,9 @@ static int kvmppc_get_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	case KVM_REG_PPC_TM_CR:
 		*val = get_reg_val(id, vcpu->arch.cr_tm);
 		break;
+	case KVM_REG_PPC_TM_XER:
+		*val = get_reg_val(id, vcpu->arch.xer_tm);
+		break;
 	case KVM_REG_PPC_TM_LR:
 		*val = get_reg_val(id, vcpu->arch.lr_tm);
 		break;
@@ -1371,6 +1380,9 @@ static int kvmppc_set_one_reg_hv(struct kvm_vcpu *vcpu, u64 id,
 	}
 	case KVM_REG_PPC_TM_CR:
 		vcpu->arch.cr_tm = set_reg_val(id, *val);
+		break;
+	case KVM_REG_PPC_TM_XER:
+		vcpu->arch.xer_tm = set_reg_val(id, *val);
 		break;
 	case KVM_REG_PPC_TM_LR:
 		vcpu->arch.lr_tm = set_reg_val(id, *val);

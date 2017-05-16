@@ -1172,10 +1172,10 @@ static inline bool nested_cpu_has_posted_intr(struct vmcs12 *vmcs12)
 	return vmcs12->pin_based_vm_exec_control & PIN_BASED_POSTED_INTR;
 }
 
-static inline bool is_exception(u32 intr_info)
+static inline bool is_nmi(u32 intr_info)
 {
 	return (intr_info & (INTR_INFO_INTR_TYPE_MASK | INTR_INFO_VALID_MASK))
-		== (INTR_TYPE_HARD_EXCEPTION | INTR_INFO_VALID_MASK);
+		== (INTR_TYPE_NMI_INTR | INTR_INFO_VALID_MASK);
 }
 
 static void nested_vmx_vmexit(struct kvm_vcpu *vcpu, u32 exit_reason,
@@ -1567,7 +1567,7 @@ static void update_exception_bitmap(struct kvm_vcpu *vcpu)
 	u32 eb;
 
 	eb = (1u << PF_VECTOR) | (1u << UD_VECTOR) | (1u << MC_VECTOR) |
-	     (1u << NM_VECTOR) | (1u << DB_VECTOR);
+	     (1u << NM_VECTOR) | (1u << DB_VECTOR) | (1u << AC_VECTOR);
 	if ((vcpu->guest_debug &
 	     (KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP)) ==
 	    (KVM_GUESTDBG_ENABLE | KVM_GUESTDBG_USE_SW_BP))
@@ -1674,6 +1674,13 @@ static void add_atomic_switch_msr(struct vcpu_vmx *vmx, unsigned msr,
 			return;
 		}
 		break;
+	case MSR_IA32_PEBS_ENABLE:
+		/* PEBS needs a quiescent period after being disabled (to write
+		 * a record).  Disabling PEBS through VMX MSR swapping doesn't
+		 * provide that period, so a CPU could write host's record into
+		 * guest's memory.
+		 */
+		wrmsrl(MSR_IA32_PEBS_ENABLE, 0);
 	}
 
 	for (i = 0; i < m->nr; ++i)
@@ -1711,26 +1718,31 @@ static void reload_tss(void)
 
 static bool update_transition_efer(struct vcpu_vmx *vmx, int efer_offset)
 {
-	u64 guest_efer;
-	u64 ignore_bits;
+	u64 guest_efer = vmx->vcpu.arch.efer;
+	u64 ignore_bits = 0;
 
-	guest_efer = vmx->vcpu.arch.efer;
+	if (!enable_ept) {
+		/*
+		 * NX is needed to handle CR0.WP=1, CR4.SMEP=1.  Testing
+		 * host CPUID is more efficient than testing guest CPUID
+		 * or CR4.  Host SMEP is anyway a requirement for guest SMEP.
+		 */
+		if (boot_cpu_has(X86_FEATURE_SMEP))
+			guest_efer |= EFER_NX;
+		else if (!(guest_efer & EFER_NX))
+			ignore_bits |= EFER_NX;
+	}
 
 	/*
-	 * NX is emulated; LMA and LME handled by hardware; SCE meaningless
-	 * outside long mode
+	 * LMA and LME handled by hardware; SCE meaningless outside long mode.
 	 */
-	ignore_bits = EFER_NX | EFER_SCE;
+	ignore_bits |= EFER_SCE;
 #ifdef CONFIG_X86_64
 	ignore_bits |= EFER_LMA | EFER_LME;
 	/* SCE is meaningful only in long mode on Intel */
 	if (guest_efer & EFER_LMA)
 		ignore_bits &= ~(u64)EFER_SCE;
 #endif
-	guest_efer &= ~ignore_bits;
-	guest_efer |= host_efer & ignore_bits;
-	vmx->guest_msrs[efer_offset].data = guest_efer;
-	vmx->guest_msrs[efer_offset].mask = ~ignore_bits;
 
 	clear_atomic_switch_msr(vmx, MSR_EFER);
 
@@ -1741,16 +1753,21 @@ static bool update_transition_efer(struct vcpu_vmx *vmx, int efer_offset)
 	 */
 	if (cpu_has_load_ia32_efer ||
 	    (enable_ept && ((vmx->vcpu.arch.efer ^ host_efer) & EFER_NX))) {
-		guest_efer = vmx->vcpu.arch.efer;
 		if (!(guest_efer & EFER_LMA))
 			guest_efer &= ~EFER_LME;
 		if (guest_efer != host_efer)
 			add_atomic_switch_msr(vmx, MSR_EFER,
 					      guest_efer, host_efer);
 		return false;
-	}
+	} else {
+		guest_efer &= ~ignore_bits;
+		guest_efer |= host_efer & ignore_bits;
 
-	return true;
+		vmx->guest_msrs[efer_offset].data = guest_efer;
+		vmx->guest_msrs[efer_offset].mask = ~ignore_bits;
+
+		return true;
+	}
 }
 
 static unsigned long segment_base(u16 selector)
@@ -2623,76 +2640,69 @@ static int vmx_get_vmx_msr(struct kvm_vcpu *vcpu, u32 msr_index, u64 *pdata)
  * Returns 0 on success, non-0 otherwise.
  * Assumes vcpu_load() was already called.
  */
-static int vmx_get_msr(struct kvm_vcpu *vcpu, u32 msr_index, u64 *pdata)
+static int vmx_get_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 {
-	u64 data;
 	struct shared_msr_entry *msr;
 
-	if (!pdata) {
-		printk(KERN_ERR "BUG: get_msr called with NULL pdata\n");
-		return -EINVAL;
-	}
-
-	switch (msr_index) {
+	switch (msr_info->index) {
 #ifdef CONFIG_X86_64
 	case MSR_FS_BASE:
-		data = vmcs_readl(GUEST_FS_BASE);
+		msr_info->data = vmcs_readl(GUEST_FS_BASE);
 		break;
 	case MSR_GS_BASE:
-		data = vmcs_readl(GUEST_GS_BASE);
+		msr_info->data = vmcs_readl(GUEST_GS_BASE);
 		break;
 	case MSR_KERNEL_GS_BASE:
 		vmx_load_host_state(to_vmx(vcpu));
-		data = to_vmx(vcpu)->msr_guest_kernel_gs_base;
+		msr_info->data = to_vmx(vcpu)->msr_guest_kernel_gs_base;
 		break;
 #endif
 	case MSR_EFER:
-		return kvm_get_msr_common(vcpu, msr_index, pdata);
+		return kvm_get_msr_common(vcpu, msr_info);
 	case MSR_IA32_TSC:
-		data = guest_read_tsc();
+		msr_info->data = guest_read_tsc();
 		break;
 	case MSR_IA32_SYSENTER_CS:
-		data = vmcs_read32(GUEST_SYSENTER_CS);
+		msr_info->data = vmcs_read32(GUEST_SYSENTER_CS);
 		break;
 	case MSR_IA32_SYSENTER_EIP:
-		data = vmcs_readl(GUEST_SYSENTER_EIP);
+		msr_info->data = vmcs_readl(GUEST_SYSENTER_EIP);
 		break;
 	case MSR_IA32_SYSENTER_ESP:
-		data = vmcs_readl(GUEST_SYSENTER_ESP);
+		msr_info->data = vmcs_readl(GUEST_SYSENTER_ESP);
 		break;
 	case MSR_IA32_BNDCFGS:
 		if (!vmx_mpx_supported())
 			return 1;
-		data = vmcs_read64(GUEST_BNDCFGS);
+		msr_info->data = vmcs_read64(GUEST_BNDCFGS);
 		break;
 	case MSR_IA32_FEATURE_CONTROL:
 		if (!nested_vmx_allowed(vcpu))
 			return 1;
-		data = to_vmx(vcpu)->nested.msr_ia32_feature_control;
+		msr_info->data = to_vmx(vcpu)->nested.msr_ia32_feature_control;
 		break;
 	case MSR_IA32_VMX_BASIC ... MSR_IA32_VMX_VMFUNC:
 		if (!nested_vmx_allowed(vcpu))
 			return 1;
-		return vmx_get_vmx_msr(vcpu, msr_index, pdata);
+		return vmx_get_vmx_msr(vcpu, msr_info->index, &msr_info->data);
 	case MSR_IA32_XSS:
 		if (!vmx_xsaves_supported())
 			return 1;
-		data = vcpu->arch.ia32_xss;
+		msr_info->data = vcpu->arch.ia32_xss;
 		break;
 	case MSR_TSC_AUX:
-		if (!to_vmx(vcpu)->rdtscp_enabled)
+		if (!to_vmx(vcpu)->rdtscp_enabled && !msr_info->host_initiated)
 			return 1;
 		/* Otherwise falls through */
 	default:
-		msr = find_msr_entry(to_vmx(vcpu), msr_index);
+		msr = find_msr_entry(to_vmx(vcpu), msr_info->index);
 		if (msr) {
-			data = msr->data;
+			msr_info->data = msr->data;
 			break;
 		}
-		return kvm_get_msr_common(vcpu, msr_index, pdata);
+		return kvm_get_msr_common(vcpu, msr_info);
 	}
 
-	*pdata = data;
 	return 0;
 }
 
@@ -2787,7 +2797,7 @@ static int vmx_set_msr(struct kvm_vcpu *vcpu, struct msr_data *msr_info)
 			clear_atomic_switch_msr(vmx, MSR_IA32_XSS);
 		break;
 	case MSR_TSC_AUX:
-		if (!vmx->rdtscp_enabled)
+		if (!vmx->rdtscp_enabled && !msr_info->host_initiated)
 			return 1;
 		/* Check reserved bit, higher 32 bits should be zero */
 		if ((data >> 32) != 0)
@@ -3652,19 +3662,20 @@ static int vmx_set_cr4(struct kvm_vcpu *vcpu, unsigned long cr4)
 		if (!is_paging(vcpu)) {
 			hw_cr4 &= ~X86_CR4_PAE;
 			hw_cr4 |= X86_CR4_PSE;
-			/*
-			 * SMEP/SMAP is disabled if CPU is in non-paging mode
-			 * in hardware. However KVM always uses paging mode to
-			 * emulate guest non-paging mode with TDP.
-			 * To emulate this behavior, SMEP/SMAP needs to be
-			 * manually disabled when guest switches to non-paging
-			 * mode.
-			 */
-			hw_cr4 &= ~(X86_CR4_SMEP | X86_CR4_SMAP);
 		} else if (!(cr4 & X86_CR4_PAE)) {
 			hw_cr4 &= ~X86_CR4_PAE;
 		}
 	}
+
+	if (!enable_unrestricted_guest && !is_paging(vcpu))
+		/*
+		 * SMEP/SMAP is disabled if CPU is in non-paging mode in
+		 * hardware.  However KVM always uses paging mode without
+		 * unrestricted guest.
+		 * To emulate this behavior, SMEP/SMAP needs to be manually
+		 * disabled when guest switches to non-paging mode.
+		 */
+		hw_cr4 &= ~(X86_CR4_SMEP | X86_CR4_SMAP);
 
 	vmcs_writel(CR4_READ_SHADOW, cr4);
 	vmcs_writel(GUEST_CR4, hw_cr4);
@@ -5071,7 +5082,7 @@ static int handle_exception(struct kvm_vcpu *vcpu)
 	if (is_machine_check(intr_info))
 		return handle_machine_check(vcpu);
 
-	if ((intr_info & INTR_INFO_INTR_TYPE_MASK) == INTR_TYPE_NMI_INTR)
+	if (is_nmi(intr_info))
 		return 1;  /* already handled by vmx_vcpu_run() */
 
 	if (is_no_device(intr_info)) {
@@ -5127,6 +5138,9 @@ static int handle_exception(struct kvm_vcpu *vcpu)
 		return handle_rmode_exception(vcpu, ex_no, error_code);
 
 	switch (ex_no) {
+	case AC_VECTOR:
+		kvm_queue_exception_e(vcpu, AC_VECTOR, error_code);
+		return 1;
 	case DB_VECTOR:
 		dr6 = vmcs_readl(EXIT_QUALIFICATION);
 		if (!(vcpu->guest_debug &
@@ -5475,19 +5489,21 @@ static int handle_cpuid(struct kvm_vcpu *vcpu)
 static int handle_rdmsr(struct kvm_vcpu *vcpu)
 {
 	u32 ecx = vcpu->arch.regs[VCPU_REGS_RCX];
-	u64 data;
+	struct msr_data msr_info;
 
-	if (vmx_get_msr(vcpu, ecx, &data)) {
+	msr_info.index = ecx;
+	msr_info.host_initiated = false;
+	if (vmx_get_msr(vcpu, &msr_info)) {
 		trace_kvm_msr_read_ex(ecx);
 		kvm_inject_gp(vcpu, 0);
 		return 1;
 	}
 
-	trace_kvm_msr_read(ecx, data);
+	trace_kvm_msr_read(ecx, msr_info.data);
 
 	/* FIXME: handling of bits 32:63 of rax, rdx */
-	vcpu->arch.regs[VCPU_REGS_RAX] = data & -1u;
-	vcpu->arch.regs[VCPU_REGS_RDX] = (data >> 32) & -1u;
+	vcpu->arch.regs[VCPU_REGS_RAX] = msr_info.data & -1u;
+	vcpu->arch.regs[VCPU_REGS_RDX] = (msr_info.data >> 32) & -1u;
 	skip_emulated_instruction(vcpu);
 	return 1;
 }
@@ -7189,6 +7205,7 @@ static int handle_invept(struct kvm_vcpu *vcpu)
 	if (!(types & (1UL << type))) {
 		nested_vmx_failValid(vcpu,
 				VMXERR_INVALID_OPERAND_TO_INVEPT_INVVPID);
+		skip_emulated_instruction(vcpu);
 		return 1;
 	}
 
@@ -7497,7 +7514,7 @@ static bool nested_vmx_exit_handled(struct kvm_vcpu *vcpu)
 
 	switch (exit_reason) {
 	case EXIT_REASON_EXCEPTION_NMI:
-		if (!is_exception(intr_info))
+		if (is_nmi(intr_info))
 			return false;
 		else if (is_page_fault(intr_info))
 			return enable_ept;
@@ -7748,6 +7765,7 @@ static int vmx_handle_exit(struct kvm_vcpu *vcpu)
 	if ((vectoring_info & VECTORING_INFO_VALID_MASK) &&
 			(exit_reason != EXIT_REASON_EXCEPTION_NMI &&
 			exit_reason != EXIT_REASON_EPT_VIOLATION &&
+			exit_reason != EXIT_REASON_PML_FULL &&
 			exit_reason != EXIT_REASON_TASK_SWITCH)) {
 		vcpu->run->exit_reason = KVM_EXIT_INTERNAL_ERROR;
 		vcpu->run->internal.suberror = KVM_INTERNAL_ERROR_DELIVERY_EV;
@@ -7944,8 +7962,7 @@ static void vmx_complete_atomic_exit(struct vcpu_vmx *vmx)
 		kvm_machine_check();
 
 	/* We need to handle NMIs before interrupts are enabled */
-	if ((exit_intr_info & INTR_INFO_INTR_TYPE_MASK) == INTR_TYPE_NMI_INTR &&
-	    (exit_intr_info & INTR_INFO_VALID_MASK)) {
+	if (is_nmi(exit_intr_info)) {
 		kvm_before_handle_nmi(&vmx->vcpu);
 		asm("int $2");
 		kvm_after_handle_nmi(&vmx->vcpu);
@@ -8355,6 +8372,22 @@ static void vmx_load_vmcs01(struct kvm_vcpu *vcpu)
 	put_cpu();
 }
 
+/*
+ * Ensure that the current vmcs of the logical processor is the
+ * vmcs01 of the vcpu before calling free_nested().
+ */
+static void vmx_free_vcpu_nested(struct kvm_vcpu *vcpu)
+{
+       struct vcpu_vmx *vmx = to_vmx(vcpu);
+       int r;
+
+       r = vcpu_load(vcpu);
+       BUG_ON(r);
+       vmx_load_vmcs01(vcpu);
+       free_nested(vmx);
+       vcpu_put(vcpu);
+}
+
 static void vmx_free_vcpu(struct kvm_vcpu *vcpu)
 {
 	struct vcpu_vmx *vmx = to_vmx(vcpu);
@@ -8363,8 +8396,7 @@ static void vmx_free_vcpu(struct kvm_vcpu *vcpu)
 		vmx_disable_pml(vmx);
 	free_vpid(vmx);
 	leave_guest_mode(vcpu);
-	vmx_load_vmcs01(vcpu);
-	free_nested(vmx);
+	vmx_free_vcpu_nested(vcpu);
 	free_loaded_vmcs(vmx->loaded_vmcs);
 	kfree(vmx->guest_msrs);
 	kvm_vcpu_uninit(vcpu);
@@ -9001,6 +9033,7 @@ static int nested_vmx_store_msr(struct kvm_vcpu *vcpu, u64 gpa, u32 count)
 	struct vmx_msr_entry e;
 
 	for (i = 0; i < count; i++) {
+		struct msr_data msr_info;
 		if (kvm_read_guest(vcpu->kvm,
 				   gpa + i * sizeof(e),
 				   &e, 2 * sizeof(u32))) {
@@ -9015,7 +9048,9 @@ static int nested_vmx_store_msr(struct kvm_vcpu *vcpu, u64 gpa, u32 count)
 				__func__, i, e.index, e.reserved);
 			return -EINVAL;
 		}
-		if (kvm_get_msr(vcpu, e.index, &e.value)) {
+		msr_info.host_initiated = false;
+		msr_info.index = e.index;
+		if (kvm_get_msr(vcpu, &msr_info)) {
 			pr_warn_ratelimited(
 				"%s cannot read MSR (%u, 0x%x)\n",
 				__func__, i, e.index);
@@ -9024,10 +9059,10 @@ static int nested_vmx_store_msr(struct kvm_vcpu *vcpu, u64 gpa, u32 count)
 		if (kvm_write_guest(vcpu->kvm,
 				    gpa + i * sizeof(e) +
 					offsetof(struct vmx_msr_entry, value),
-				    &e.value, sizeof(e.value))) {
+				    &msr_info.data, sizeof(msr_info.data))) {
 			pr_warn_ratelimited(
 				"%s cannot write MSR (%u, 0x%x, 0x%llx)\n",
-				__func__, i, e.index, e.value);
+				__func__, i, e.index, msr_info.data);
 			return -EINVAL;
 		}
 	}

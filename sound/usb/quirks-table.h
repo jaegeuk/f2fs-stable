@@ -2820,6 +2820,17 @@ YAMAHA_DEVICE(0x7010, "UB99"),
 	.idProduct = 0x1020,
 },
 
+/* QinHeng devices */
+{
+	USB_DEVICE(0x1a86, 0x752d),
+	.driver_info = (unsigned long) &(const struct snd_usb_audio_quirk) {
+		.vendor_name = "QinHeng",
+		.product_name = "CH345",
+		.ifnum = 1,
+		.type = QUIRK_MIDI_CH345
+	}
+},
+
 /* KeithMcMillen Stringport */
 {
 	USB_DEVICE(0x1f38, 0x0001),
@@ -2886,6 +2897,23 @@ AU0828_DEVICE(0x2040, 0x8200, "Hauppauge", "Woodbury"),
 AU0828_DEVICE(0x2040, 0x7260, "Hauppauge", "HVR-950Q"),
 AU0828_DEVICE(0x2040, 0x7213, "Hauppauge", "HVR-950Q"),
 AU0828_DEVICE(0x2040, 0x7270, "Hauppauge", "HVR-950Q"),
+
+/* Syntek STK1160 */
+{
+	.match_flags = USB_DEVICE_ID_MATCH_DEVICE |
+		       USB_DEVICE_ID_MATCH_INT_CLASS |
+		       USB_DEVICE_ID_MATCH_INT_SUBCLASS,
+	.idVendor = 0x05e1,
+	.idProduct = 0x0408,
+	.bInterfaceClass = USB_CLASS_AUDIO,
+	.bInterfaceSubClass = USB_SUBCLASS_AUDIOCONTROL,
+	.driver_info = (unsigned long) &(const struct snd_usb_audio_quirk) {
+		.vendor_name = "Syntek",
+		.product_name = "STK1160",
+		.ifnum = QUIRK_ANY_INTERFACE,
+		.type = QUIRK_AUDIO_ALIGN_TRANSFER
+	}
+},
 
 /* Digidesign Mbox */
 {

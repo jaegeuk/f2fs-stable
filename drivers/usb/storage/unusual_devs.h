@@ -1987,7 +1987,7 @@ UNUSUAL_DEV(  0x14cd, 0x6600, 0x0201, 0x0201,
 		US_FL_IGNORE_RESIDUE ),
 
 /* Reported by Michael Büsch <m@bues.ch> */
-UNUSUAL_DEV(  0x152d, 0x0567, 0x0114, 0x0114,
+UNUSUAL_DEV(  0x152d, 0x0567, 0x0114, 0x0116,
 		"JMicron",
 		"USB to ATA/ATAPI Bridge",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
@@ -2123,6 +2123,13 @@ UNUSUAL_DEV(  0x22b8, 0x3010, 0x0001, 0x0001,
 		"RAZR V3x",
 		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
 		US_FL_FIX_CAPACITY | US_FL_IGNORE_RESIDUE ),
+
+/* Reported-by George Cherian <george.cherian@cavium.com> */
+UNUSUAL_DEV(0x152d, 0x9561, 0x0000, 0x9999,
+		"JMicron",
+		"JMS56x",
+		USB_SC_DEVICE, USB_PR_DEVICE, NULL,
+		US_FL_NO_REPORT_OPCODES),
 
 /*
  * Patch by Constantin Baranov <const@tltsu.ru>

@@ -198,8 +198,11 @@ void update_perf_cpu_limits(void)
 	u64 tmp = perf_sample_period_ns;
 
 	tmp *= sysctl_perf_cpu_time_max_percent;
-	do_div(tmp, 100);
-	ACCESS_ONCE(perf_sample_allowed_ns) = tmp;
+	tmp = div_u64(tmp, 100);
+	if (!tmp)
+		tmp = 1;
+
+	WRITE_ONCE(perf_sample_allowed_ns, tmp);
 }
 
 static int perf_rotate_context(struct perf_cpu_context *cpuctx);
@@ -212,6 +215,13 @@ int perf_proc_update_handler(struct ctl_table *table, int write,
 
 	if (ret || !write)
 		return ret;
+
+	/*
+	 * If throttling is disabled don't allow the write:
+	 */
+	if (sysctl_perf_cpu_time_max_percent == 100 ||
+	    sysctl_perf_cpu_time_max_percent == 0)
+		return -EINVAL;
 
 	max_samples_per_tick = DIV_ROUND_UP(sysctl_perf_event_sample_rate, HZ);
 	perf_sample_period_ns = NSEC_PER_SEC / sysctl_perf_event_sample_rate;
@@ -226,12 +236,19 @@ int perf_cpu_time_max_percent_handler(struct ctl_table *table, int write,
 				void __user *buffer, size_t *lenp,
 				loff_t *ppos)
 {
-	int ret = proc_dointvec(table, write, buffer, lenp, ppos);
+	int ret = proc_dointvec_minmax(table, write, buffer, lenp, ppos);
 
 	if (ret || !write)
 		return ret;
 
-	update_perf_cpu_limits();
+	if (sysctl_perf_cpu_time_max_percent == 100 ||
+	    sysctl_perf_cpu_time_max_percent == 0) {
+		printk(KERN_WARNING
+		       "perf: Dynamic interrupt throttling disabled, can hang your system!\n");
+		WRITE_ONCE(perf_sample_allowed_ns, 0);
+	} else {
+		update_perf_cpu_limits();
+	}
 
 	return 0;
 }
@@ -245,62 +262,68 @@ int perf_cpu_time_max_percent_handler(struct ctl_table *table, int write,
 #define NR_ACCUMULATED_SAMPLES 128
 static DEFINE_PER_CPU(u64, running_sample_length);
 
+static u64 __report_avg;
+static u64 __report_allowed;
+
 static void perf_duration_warn(struct irq_work *w)
 {
-	u64 allowed_ns = ACCESS_ONCE(perf_sample_allowed_ns);
-	u64 avg_local_sample_len;
-	u64 local_samples_len;
-
-	local_samples_len = __this_cpu_read(running_sample_length);
-	avg_local_sample_len = local_samples_len/NR_ACCUMULATED_SAMPLES;
-
 	printk_ratelimited(KERN_WARNING
-			"perf interrupt took too long (%lld > %lld), lowering "
-			"kernel.perf_event_max_sample_rate to %d\n",
-			avg_local_sample_len, allowed_ns >> 1,
-			sysctl_perf_event_sample_rate);
+		"perf: interrupt took too long (%lld > %lld), lowering "
+		"kernel.perf_event_max_sample_rate to %d\n",
+		__report_avg, __report_allowed,
+		sysctl_perf_event_sample_rate);
 }
 
 static DEFINE_IRQ_WORK(perf_duration_work, perf_duration_warn);
 
 void perf_sample_event_took(u64 sample_len_ns)
 {
-	u64 allowed_ns = ACCESS_ONCE(perf_sample_allowed_ns);
-	u64 avg_local_sample_len;
-	u64 local_samples_len;
+	u64 max_len = READ_ONCE(perf_sample_allowed_ns);
+	u64 running_len;
+	u64 avg_len;
+	u32 max;
 
-	if (allowed_ns == 0)
+	if (max_len == 0)
 		return;
 
-	/* decay the counter by 1 average sample */
-	local_samples_len = __this_cpu_read(running_sample_length);
-	local_samples_len -= local_samples_len/NR_ACCUMULATED_SAMPLES;
-	local_samples_len += sample_len_ns;
-	__this_cpu_write(running_sample_length, local_samples_len);
+	/* Decay the counter by 1 average sample. */
+	running_len = __this_cpu_read(running_sample_length);
+	running_len -= running_len/NR_ACCUMULATED_SAMPLES;
+	running_len += sample_len_ns;
+	__this_cpu_write(running_sample_length, running_len);
 
 	/*
-	 * note: this will be biased artifically low until we have
-	 * seen NR_ACCUMULATED_SAMPLES.  Doing it this way keeps us
+	 * Note: this will be biased artifically low until we have
+	 * seen NR_ACCUMULATED_SAMPLES. Doing it this way keeps us
 	 * from having to maintain a count.
 	 */
-	avg_local_sample_len = local_samples_len/NR_ACCUMULATED_SAMPLES;
-
-	if (avg_local_sample_len <= allowed_ns)
+	avg_len = running_len/NR_ACCUMULATED_SAMPLES;
+	if (avg_len <= max_len)
 		return;
 
-	if (max_samples_per_tick <= 1)
-		return;
+	__report_avg = avg_len;
+	__report_allowed = max_len;
 
-	max_samples_per_tick = DIV_ROUND_UP(max_samples_per_tick, 2);
-	sysctl_perf_event_sample_rate = max_samples_per_tick * HZ;
+	/*
+	 * Compute a throttle threshold 25% below the current duration.
+	 */
+	avg_len += avg_len / 4;
+	max = (TICK_NSEC / 100) * sysctl_perf_cpu_time_max_percent;
+	if (avg_len < max)
+		max /= (u32)avg_len;
+	else
+		max = 1;
+
+	WRITE_ONCE(perf_sample_allowed_ns, avg_len);
+	WRITE_ONCE(max_samples_per_tick, max);
+
+	sysctl_perf_event_sample_rate = max * HZ;
 	perf_sample_period_ns = NSEC_PER_SEC / sysctl_perf_event_sample_rate;
 
-	update_perf_cpu_limits();
-
 	if (!irq_work_queue(&perf_duration_work)) {
-		early_printk("perf interrupt took too long (%lld > %lld), lowering "
+		early_printk("perf: interrupt took too long (%lld > %lld), lowering "
 			     "kernel.perf_event_max_sample_rate to %d\n",
-			     avg_local_sample_len, allowed_ns >> 1,
+			     __report_avg, __report_allowed,
 			     sysctl_perf_event_sample_rate);
 	}
 }
@@ -1562,14 +1585,14 @@ event_sched_out(struct perf_event *event,
 
 	perf_pmu_disable(event->pmu);
 
+	event->tstamp_stopped = tstamp;
+	event->pmu->del(event, 0);
+	event->oncpu = -1;
 	event->state = PERF_EVENT_STATE_INACTIVE;
 	if (event->pending_disable) {
 		event->pending_disable = 0;
 		event->state = PERF_EVENT_STATE_OFF;
 	}
-	event->tstamp_stopped = tstamp;
-	event->pmu->del(event, 0);
-	event->oncpu = -1;
 
 	if (!is_software_event(event))
 		cpuctx->active_oncpu--;
@@ -3314,7 +3337,7 @@ find_lively_task_by_vpid(pid_t vpid)
 
 	/* Reuse ptrace permission checks for now. */
 	err = -EACCES;
-	if (!ptrace_may_access(task, PTRACE_MODE_READ))
+	if (!ptrace_may_access(task, PTRACE_MODE_READ_REALCREDS))
 		goto errout;
 
 	return task;
@@ -5833,6 +5856,27 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
 	char *buf = NULL;
 	char *name;
 
+	if (vma->vm_flags & VM_READ)
+		prot |= PROT_READ;
+	if (vma->vm_flags & VM_WRITE)
+		prot |= PROT_WRITE;
+	if (vma->vm_flags & VM_EXEC)
+		prot |= PROT_EXEC;
+
+	if (vma->vm_flags & VM_MAYSHARE)
+		flags = MAP_SHARED;
+	else
+		flags = MAP_PRIVATE;
+
+	if (vma->vm_flags & VM_DENYWRITE)
+		flags |= MAP_DENYWRITE;
+	if (vma->vm_flags & VM_MAYEXEC)
+		flags |= MAP_EXECUTABLE;
+	if (vma->vm_flags & VM_LOCKED)
+		flags |= MAP_LOCKED;
+	if (vma->vm_flags & VM_HUGETLB)
+		flags |= MAP_HUGETLB;
+
 	if (file) {
 		struct inode *inode;
 		dev_t dev;
@@ -5858,27 +5902,6 @@ static void perf_event_mmap_event(struct perf_mmap_event *mmap_event)
 		gen = inode->i_generation;
 		maj = MAJOR(dev);
 		min = MINOR(dev);
-
-		if (vma->vm_flags & VM_READ)
-			prot |= PROT_READ;
-		if (vma->vm_flags & VM_WRITE)
-			prot |= PROT_WRITE;
-		if (vma->vm_flags & VM_EXEC)
-			prot |= PROT_EXEC;
-
-		if (vma->vm_flags & VM_MAYSHARE)
-			flags = MAP_SHARED;
-		else
-			flags = MAP_PRIVATE;
-
-		if (vma->vm_flags & VM_DENYWRITE)
-			flags |= MAP_DENYWRITE;
-		if (vma->vm_flags & VM_MAYEXEC)
-			flags |= MAP_EXECUTABLE;
-		if (vma->vm_flags & VM_LOCKED)
-			flags |= MAP_LOCKED;
-		if (vma->vm_flags & VM_HUGETLB)
-			flags |= MAP_HUGETLB;
 
 		goto got_name;
 	} else {
@@ -7641,6 +7664,9 @@ perf_event_alloc(struct perf_event_attr *attr, int cpu,
 		}
 	}
 
+	/* symmetric to unaccount_event() in _free_event() */
+	account_event(event);
+
 	return event;
 
 err_per_task:
@@ -8004,8 +8030,6 @@ SYSCALL_DEFINE5(perf_event_open,
 		}
 	}
 
-	account_event(event);
-
 	/*
 	 * Special case software events and allow them to be part of
 	 * any hardware group.
@@ -8221,7 +8245,12 @@ err_context:
 	perf_unpin_context(ctx);
 	put_ctx(ctx);
 err_alloc:
-	free_event(event);
+	/*
+	 * If event_file is set, the fput() above will have called ->release()
+	 * and that will take care of freeing the event.
+	 */
+	if (!event_file)
+		free_event(event);
 err_cpus:
 	put_online_cpus();
 err_task:
@@ -8264,8 +8293,6 @@ perf_event_create_kernel_counter(struct perf_event_attr *attr, int cpu,
 
 	/* Mark owner so we could distinguish it from user events. */
 	event->owner = EVENT_OWNER_KERNEL;
-
-	account_event(event);
 
 	ctx = find_get_context(event->pmu, task, event);
 	if (IS_ERR(ctx)) {

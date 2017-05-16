@@ -533,15 +533,16 @@ struct nfs4_file {
  * Better suggestions welcome.
  */
 struct nfs4_ol_stateid {
-	struct nfs4_stid    st_stid; /* must be first field */
-	struct list_head              st_perfile;
-	struct list_head              st_perstateowner;
-	struct list_head              st_locks;
-	struct nfs4_stateowner      * st_stateowner;
-	struct nfs4_clnt_odstate    * st_clnt_odstate;
-	unsigned char                 st_access_bmap;
-	unsigned char                 st_deny_bmap;
-	struct nfs4_ol_stateid         * st_openstp;
+	struct nfs4_stid		st_stid;
+	struct list_head		st_perfile;
+	struct list_head		st_perstateowner;
+	struct list_head		st_locks;
+	struct nfs4_stateowner		*st_stateowner;
+	struct nfs4_clnt_odstate	*st_clnt_odstate;
+	unsigned char			st_access_bmap;
+	unsigned char			st_deny_bmap;
+	struct nfs4_ol_stateid		*st_openstp;
+	struct rw_semaphore		st_rwsem;
 };
 
 static inline struct nfs4_ol_stateid *openlockstateid(struct nfs4_stid *s)
@@ -588,8 +589,8 @@ extern __be32 nfs4_preprocess_stateid_op(struct net *net,
 __be32 nfsd4_lookup_stateid(struct nfsd4_compound_state *cstate,
 		     stateid_t *stateid, unsigned char typemask,
 		     struct nfs4_stid **s, struct nfsd_net *nn);
-struct nfs4_stid *nfs4_alloc_stid(struct nfs4_client *cl,
-		struct kmem_cache *slab);
+struct nfs4_stid *nfs4_alloc_stid(struct nfs4_client *cl, struct kmem_cache *slab,
+				  void (*sc_free)(struct nfs4_stid *));
 void nfs4_unhash_stid(struct nfs4_stid *s);
 void nfs4_put_stid(struct nfs4_stid *s);
 void nfs4_remove_reclaim_record(struct nfs4_client_reclaim *, struct nfsd_net *);

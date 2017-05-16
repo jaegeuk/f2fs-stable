@@ -583,14 +583,13 @@ musb_rx_reinit(struct musb *musb, struct musb_qh *qh, struct musb_hw_ep *ep)
 		musb_writew(ep->regs, MUSB_TXCSR, 0);
 
 	/* scrub all previous state, clearing toggle */
-	} else {
-		csr = musb_readw(ep->regs, MUSB_RXCSR);
-		if (csr & MUSB_RXCSR_RXPKTRDY)
-			WARNING("rx%d, packet/%d ready?\n", ep->epnum,
-				musb_readw(ep->regs, MUSB_RXCOUNT));
-
-		musb_h_flush_rxfifo(ep, MUSB_RXCSR_CLRDATATOG);
 	}
+	csr = musb_readw(ep->regs, MUSB_RXCSR);
+	if (csr & MUSB_RXCSR_RXPKTRDY)
+		WARNING("rx%d, packet/%d ready?\n", ep->epnum,
+			musb_readw(ep->regs, MUSB_RXCOUNT));
+
+	musb_h_flush_rxfifo(ep, MUSB_RXCSR_CLRDATATOG);
 
 	/* target addr and (for multipoint) hub addr/port */
 	if (musb->is_multipoint) {
@@ -950,9 +949,15 @@ static void musb_bulk_nak_timeout(struct musb *musb, struct musb_hw_ep *ep,
 	if (is_in) {
 		dma = is_dma_capable() ? ep->rx_channel : NULL;
 
-		/* clear nak timeout bit */
+		/*
+		 * Need to stop the transaction by clearing REQPKT first
+		 * then the NAK Timeout bit ref MUSBMHDRC USB 2.0 HIGH-SPEED
+		 * DUAL-ROLE CONTROLLER Programmer's Guide, section 9.2.2
+		 */
 		rx_csr = musb_readw(epio, MUSB_RXCSR);
 		rx_csr |= MUSB_RXCSR_H_WZC_BITS;
+		rx_csr &= ~MUSB_RXCSR_H_REQPKT;
+		musb_writew(epio, MUSB_RXCSR, rx_csr);
 		rx_csr &= ~MUSB_RXCSR_DATAERROR;
 		musb_writew(epio, MUSB_RXCSR, rx_csr);
 
@@ -2268,12 +2273,11 @@ static int musb_cleanup_urb(struct urb *urb, struct musb_qh *qh)
 	int			is_in = usb_pipein(urb->pipe);
 	int			status = 0;
 	u16			csr;
+	struct dma_channel	*dma = NULL;
 
 	musb_ep_select(regs, hw_end);
 
 	if (is_dma_capable()) {
-		struct dma_channel	*dma;
-
 		dma = is_in ? ep->rx_channel : ep->tx_channel;
 		if (dma) {
 			status = ep->musb->dma_controller->channel_abort(dma);
@@ -2290,10 +2294,9 @@ static int musb_cleanup_urb(struct urb *urb, struct musb_qh *qh)
 		/* giveback saves bulk toggle */
 		csr = musb_h_flush_rxfifo(ep, 0);
 
-		/* REVISIT we still get an irq; should likely clear the
-		 * endpoint's irq status here to avoid bogus irqs.
-		 * clearing that status is platform-specific...
-		 */
+		/* clear the endpoint's irq status here to avoid bogus irqs */
+		if (is_dma_capable() && dma)
+			musb_platform_clear_ep_rxintr(musb, ep->epnum);
 	} else if (ep->epnum) {
 		musb_h_tx_flush_fifo(ep);
 		csr = musb_readw(epio, MUSB_TXCSR);
