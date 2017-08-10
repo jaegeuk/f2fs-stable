@@ -215,6 +215,8 @@ static int f2fs_do_sync_file(struct file *file, loff_t start, loff_t end,
 
 	if (unlikely(f2fs_readonly(inode->i_sb)))
 		return 0;
+	if (test_opt(sbi, FORCE_USER))
+		return 0;
 
 	trace_f2fs_sync_file_enter(inode);
 
@@ -2837,18 +2839,17 @@ static int f2fs_ioc_forward_sync(struct file *filp, unsigned long arg)
 	/* flush user data */
 	blk_start_plug(&plug);
 	err = sync_dirty_inodes(sbi, FILE_INODE);
-	if (err)
-		goto out;
 
-	/* flush inode metadata */
-	err = f2fs_sync_inode_meta(sbi);
+	/* TODO: if noop, we can skip this */
+	wait_on_all_pages_writeback(sbi);
+	blk_finish_plug(&plug);
+
 	if (err)
 		goto out;
 
 	/* flush direct node blocks with ending fsync_mark */
 	err = sync_node_pages(sbi, &wbc, false, 2, FS_NODE_IO);
 out:
-	blk_finish_plug(&plug);
 	mnt_drop_write_file(filp);
 	return err;
 }

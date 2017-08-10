@@ -972,6 +972,9 @@ retry:
 		if (is_dir)
 			F2FS_I(inode)->cp_task = NULL;
 
+		if (is_inode_flag_set(inode, FI_DIRTY_INODE))
+			sync_inode_metadata(inode, 0);
+
 		iput(inode);
 		/* We need to give cpu to another writers. */
 		if (ino == cur_ino) {
@@ -1111,7 +1114,7 @@ static void unblock_operations(struct f2fs_sb_info *sbi)
 	f2fs_unlock_all(sbi);
 }
 
-static void wait_on_all_pages_writeback(struct f2fs_sb_info *sbi)
+void wait_on_all_pages_writeback(struct f2fs_sb_info *sbi)
 {
 	DEFINE_WAIT(wait);
 

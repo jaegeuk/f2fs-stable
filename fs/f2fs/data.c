@@ -1568,6 +1568,8 @@ bool should_update_outplace(struct inode *inode, struct f2fs_io_info *fio)
 {
 	struct f2fs_sb_info *sbi = F2FS_I_SB(inode);
 
+	if (test_opt(sbi, FORCE_USER))
+		return true;
 	if (test_opt(sbi, LFS))
 		return true;
 	if (S_ISDIR(inode->i_mode))
@@ -1721,6 +1723,9 @@ static int __write_data_page(struct page *page, bool *submitted,
 		mapping_set_error(page->mapping, -EIO);
 		goto out;
 	}
+
+	if (test_opt(sbi, FORCE_USER))
+		fio.op_flags = REQ_SYNC;
 
 	if (unlikely(is_sbi_flag_set(sbi, SBI_POR_DOING)))
 		goto redirty_out;

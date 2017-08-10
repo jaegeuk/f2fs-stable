@@ -1373,7 +1373,7 @@ static int __write_node_page(struct page *page, bool atomic, bool *submitted,
 		return 0;
 	}
 
-	if (atomic && !test_opt(sbi, NOBARRIER))
+	if (atomic && !test_opt(sbi, NOBARRIER) && !test_opt(sbi, FORCE_USER))
 		fio.op_flags |= REQ_PREFLUSH | REQ_FUA;
 
 	set_page_writeback(page);
