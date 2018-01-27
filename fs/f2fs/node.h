@@ -342,6 +342,8 @@ static inline bool IS_DNODE(struct page *node_page)
 
 	if (f2fs_has_xattr_block(ofs))
 		return true;
+	if (f2fs_has_forward_block(ofs))
+		return true;
 
 	if (ofs == 3 || ofs == 4 + NIDS_PER_BLOCK ||
 			ofs == 5 + 2 * NIDS_PER_BLOCK)

@@ -1001,6 +1001,24 @@ int truncate_xattr_node(struct inode *inode)
 	return 0;
 }
 
+int truncate_forward_node(struct f2fs_sb_info *sbi)
+{
+	struct dnode_of_data dn;
+	struct page *page;
+
+	if (!sbi->forward_nid)
+		return 0;
+
+	page = get_node_page(sbi, sbi->forward_nid);
+	if (IS_ERR(page))
+		return PTR_ERR(page);
+
+	set_new_dnode(&dn, sbi->sb->s_root->d_inode, NULL,
+					page, sbi->forward_nid);
+	truncate_node(&dn);
+	return 1;
+}
+
 /*
  * Caller should grab and release a rwsem by calling f2fs_lock_op() and
  * f2fs_unlock_op().

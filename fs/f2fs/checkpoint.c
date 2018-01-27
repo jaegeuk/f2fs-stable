@@ -726,6 +726,53 @@ static void write_orphan_inodes(struct f2fs_sb_info *sbi, block_t start_blk)
 	}
 }
 
+int write_unlinked_inodes(struct f2fs_sb_info *sbi)
+{
+	struct list_head *head;
+	struct ino_entry *unlink, *tmp;
+	struct inode_management *im = &sbi->im[UNLINK_INO];
+	struct page *page;
+	nid_t *ino;
+	int nentries = 0;
+	int err = 0;
+
+	f2fs_bug_on(sbi, !sbi->forward_nid);
+
+	page = get_node_page(sbi, sbi->forward_nid);
+	if (IS_ERR(page))
+		return PTR_ERR(page);
+
+	head = &im->ino_list;
+	ino = (nid_t *)page_address(page);
+
+	spin_lock(&im->ino_lock);
+
+	/* loop for each orphan inode entry and write them in Jornal block */
+	list_for_each_entry_safe(unlink, tmp, head, list) {
+		*(ino++) = cpu_to_le32(unlink->ino);
+		nentries++;
+		if (nentries == NIDS_PER_BLOCK) {
+			f2fs_msg(sbi->sb, KERN_ERR,
+				"Too many unlinked files: need checkpoint");
+			err = -EINVAL;
+			break;
+		}
+		list_del(&unlink->list);
+		radix_tree_delete(&im->ino_root, unlink->ino);
+		kmem_cache_free(ino_entry_slab, unlink);
+		im->ino_num--;
+	}
+	spin_unlock(&im->ino_lock);
+
+	if (!err && nentries) {
+		*ino = 0;
+		set_page_dirty(page);
+	}
+
+	f2fs_put_page(page, 1);
+	return err;
+}
+
 static int get_checkpoint_version(struct f2fs_sb_info *sbi, block_t cp_addr,
 		struct f2fs_checkpoint **cp_block, struct page **cp_page,
 		unsigned long long *version)

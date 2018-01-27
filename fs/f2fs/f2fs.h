@@ -189,6 +189,7 @@ enum {
 enum {
 	ORPHAN_INO,		/* for orphan ino list */
 	APPEND_INO,		/* for append ino list */
+	UNLINK_INO,		/* for unlinked ino list */
 	UPDATE_INO,		/* for update ino list */
 	TRANS_DIR_INO,		/* for trasactions dir ino list */
 	FLUSH_INO,		/* for multiple device flushing */
@@ -479,6 +480,8 @@ static inline void make_dentry_ptr_inline(struct inode *inode,
  * But some bits are used to mark the node block.
  */
 #define XATTR_NODE_OFFSET	((((unsigned int)-1) << OFFSET_BIT_SHIFT) \
+				>> OFFSET_BIT_SHIFT)
+#define FORWARD_NODE_OFFSET	((((unsigned int)-2) << OFFSET_BIT_SHIFT) \
 				>> OFFSET_BIT_SHIFT)
 enum {
 	ALLOC_NODE,			/* allocate a new node page if needed */
@@ -1105,6 +1108,7 @@ struct f2fs_sb_info {
 	unsigned int root_ino_num;		/* root inode number*/
 	unsigned int node_ino_num;		/* node inode number*/
 	unsigned int meta_ino_num;		/* meta inode number*/
+	unsigned int forward_nid;		/* forward sync nid */
 	unsigned int log_blocks_per_seg;	/* log2 blocks per segment */
 	unsigned int blocks_per_seg;		/* blocks per segment */
 	unsigned int segs_per_sec;		/* segments per section */
@@ -1578,6 +1582,11 @@ static inline int F2FS_HAS_BLOCKS(struct inode *inode)
 static inline bool f2fs_has_xattr_block(unsigned int ofs)
 {
 	return ofs == XATTR_NODE_OFFSET;
+}
+
+static inline bool f2fs_has_forward_block(unsigned int ofs)
+{
+	return ofs == FORWARD_NODE_OFFSET;
 }
 
 static inline bool __allow_reserved_blocks(struct f2fs_sb_info *sbi,
@@ -2684,6 +2693,7 @@ pgoff_t get_next_page_offset(struct dnode_of_data *dn, pgoff_t pgofs);
 int get_dnode_of_data(struct dnode_of_data *dn, pgoff_t index, int mode);
 int truncate_inode_blocks(struct inode *inode, pgoff_t from);
 int truncate_xattr_node(struct inode *inode);
+int truncate_forward_node(struct f2fs_sb_info *sbi);
 int wait_on_node_pages_writeback(struct f2fs_sb_info *sbi, nid_t ino);
 int remove_inode_page(struct inode *inode);
 struct page *new_inode_page(struct inode *inode);
@@ -2808,6 +2818,7 @@ int write_checkpoint(struct f2fs_sb_info *sbi, struct cp_control *cpc);
 void init_ino_entry_info(struct f2fs_sb_info *sbi);
 int __init create_checkpoint_caches(void);
 void destroy_checkpoint_caches(void);
+int write_unlinked_inodes(struct f2fs_sb_info *sbi);
 
 /*
  * data.c

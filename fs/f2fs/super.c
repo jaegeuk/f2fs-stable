@@ -2811,6 +2811,27 @@ skip_recovery:
 				cur_cp_version(F2FS_CKPT(sbi)));
 	f2fs_update_time(sbi, CP_TIME);
 	f2fs_update_time(sbi, REQ_TIME);
+
+	if (test_opt(sbi, FORCE_USER)) {
+		struct dnode_of_data dn;
+		struct page *page;
+
+		if (!alloc_nid(sbi, &sbi->forward_nid)) {
+			err = -ENOSPC;
+			goto free_meta;
+		}
+		set_new_dnode(&dn, sbi->sb->s_root->d_inode, NULL,
+						NULL, sbi->forward_nid);
+		page = new_node_page(&dn, FORWARD_NODE_OFFSET);
+		if (IS_ERR(page)) {
+			alloc_nid_failed(sbi, sbi->forward_nid);
+			err = PTR_ERR(page);
+			goto free_meta;
+		}
+		alloc_nid_done(sbi, sbi->forward_nid);
+		set_mark(page, 1, COLD_BIT_SHIFT);
+		f2fs_put_page(page, 1);
+	}
 	return 0;
 
 free_meta:
@@ -2887,9 +2908,18 @@ static struct dentry *f2fs_mount(struct file_system_type *fs_type, int flags,
 static void kill_f2fs_super(struct super_block *sb)
 {
 	if (sb->s_root) {
-		set_sbi_flag(F2FS_SB(sb), SBI_IS_CLOSE);
-		stop_gc_thread(F2FS_SB(sb));
-		stop_discard_thread(F2FS_SB(sb));
+		struct f2fs_sb_info *sbi = F2FS_SB(sb);
+
+		set_sbi_flag(sbi, SBI_IS_CLOSE);
+		stop_gc_thread(sbi);
+		stop_discard_thread(sbi);
+
+		if (truncate_forward_node(sbi)) {
+			struct cp_control cpc = {
+				.reason = CP_UMOUNT,
+			};
+			write_checkpoint(sbi, &cpc);
+		}
 	}
 	kill_block_super(sb);
 }

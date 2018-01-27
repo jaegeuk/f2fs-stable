@@ -2827,14 +2827,14 @@ static int f2fs_ioc_forward_sync(struct file *filp, unsigned long arg)
 		.for_reclaim = 0,
 	};
 	struct blk_plug plug;
-	int ret, err;
+	int err;
 
 	if (!capable(CAP_SYS_ADMIN))
 		return -EPERM;
 
-	ret = mnt_want_write_file(filp);
-	if (ret)
-		return ret;
+	err = mnt_want_write_file(filp);
+	if (err)
+		return err;
 
 	/* flush user data */
 	blk_start_plug(&plug);
@@ -2844,6 +2844,10 @@ static int f2fs_ioc_forward_sync(struct file *filp, unsigned long arg)
 	wait_on_all_pages_writeback(sbi);
 	blk_finish_plug(&plug);
 
+	if (err)
+		goto out;
+
+	err = write_unlinked_inodes(sbi);
 	if (err)
 		goto out;
 
