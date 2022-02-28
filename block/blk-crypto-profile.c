@@ -501,6 +501,59 @@ int blk_crypto_derive_sw_secret(struct blk_crypto_profile *profile,
 	return err;
 }
 
+int blk_crypto_import_key(struct blk_crypto_profile *profile,
+			  const u8 *raw_key, size_t raw_key_size,
+			  u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	int ret = -EOPNOTSUPP;
+
+	if (profile &&
+	    (profile->key_types_supported & BLK_CRYPTO_KEY_TYPE_HW_WRAPPED) &&
+	    profile->ll_ops.import_key) {
+		blk_crypto_hw_enter(profile);
+		ret = profile->ll_ops.import_key(profile, raw_key, raw_key_size,
+						 longterm_wrapped_key);
+		blk_crypto_hw_exit(profile);
+	}
+	return ret;
+}
+
+int blk_crypto_generate_key(struct blk_crypto_profile *profile,
+			    u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	int ret = -EOPNOTSUPP;
+
+	if (profile &&
+	    (profile->key_types_supported & BLK_CRYPTO_KEY_TYPE_HW_WRAPPED) &&
+	    profile->ll_ops.generate_key) {
+		blk_crypto_hw_enter(profile);
+		ret = profile->ll_ops.generate_key(profile,
+						   longterm_wrapped_key);
+		blk_crypto_hw_exit(profile);
+	}
+	return ret;
+}
+
+int blk_crypto_prepare_key(struct blk_crypto_profile *profile,
+			   const u8 *longterm_wrapped_key,
+			   size_t longterm_wrapped_key_size,
+			   u8 ephemerally_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE])
+{
+	int ret = -EOPNOTSUPP;
+
+	if (profile &&
+	    (profile->key_types_supported & BLK_CRYPTO_KEY_TYPE_HW_WRAPPED) &&
+	    profile->ll_ops.prepare_key) {
+		blk_crypto_hw_enter(profile);
+		ret = profile->ll_ops.prepare_key(profile,
+						  longterm_wrapped_key,
+						  longterm_wrapped_key_size,
+						  ephemerally_wrapped_key);
+		blk_crypto_hw_exit(profile);
+	}
+	return ret;
+}
+
 /**
  * blk_crypto_intersect_capabilities() - restrict supported crypto capabilities
  *					 by child device

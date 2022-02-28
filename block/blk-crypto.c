@@ -438,3 +438,148 @@ int blk_crypto_evict_key(struct request_queue *q,
 	return blk_crypto_fallback_evict_key(key);
 }
 EXPORT_SYMBOL_GPL(blk_crypto_evict_key);
+
+static int blk_crypto_ioctl_import_key(struct blk_crypto_profile *profile,
+				       void __user *argp)
+{
+	struct blk_crypto_import_key_arg arg;
+	u8 raw_key[BLK_CRYPTO_MAX_STANDARD_KEY_SIZE];
+	u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE];
+	int ret;
+
+	if (copy_from_user(&arg, argp, sizeof(arg)))
+		return -EFAULT;
+
+	if (memchr_inv(arg.reserved, 0, sizeof(arg.reserved)))
+		return -EINVAL;
+
+	if (arg.raw_key_size < 16 || arg.raw_key_size > sizeof(raw_key))
+		return -EINVAL;
+
+	if (copy_from_user(raw_key, u64_to_user_ptr(arg.raw_key_ptr),
+			   arg.raw_key_size)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = blk_crypto_import_key(profile, raw_key, arg.raw_key_size,
+				    longterm_wrapped_key);
+	if (ret < 0)
+		goto out;
+	if (ret > arg.longterm_wrapped_key_size) {
+		ret = -ENOBUFS;
+		goto out;
+	}
+	arg.longterm_wrapped_key_size = ret;
+	if (copy_to_user(u64_to_user_ptr(arg.longterm_wrapped_key_ptr),
+			 longterm_wrapped_key, arg.longterm_wrapped_key_size) ||
+	    copy_to_user(argp, &arg, sizeof(arg))) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = 0;
+out:
+	memzero_explicit(raw_key, sizeof(raw_key));
+	memzero_explicit(longterm_wrapped_key, sizeof(longterm_wrapped_key));
+	return ret;
+}
+
+static int blk_crypto_ioctl_generate_key(struct blk_crypto_profile *profile,
+					 void __user *argp)
+{
+	struct blk_crypto_generate_key_arg arg;
+	u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE];
+	int ret;
+
+	if (copy_from_user(&arg, argp, sizeof(arg)))
+		return -EFAULT;
+
+	if (memchr_inv(arg.reserved, 0, sizeof(arg.reserved)))
+		return -EINVAL;
+
+	ret = blk_crypto_generate_key(profile, longterm_wrapped_key);
+	if (ret < 0)
+		goto out;
+	if (ret > arg.longterm_wrapped_key_size) {
+		ret = -ENOBUFS;
+		goto out;
+	}
+	arg.longterm_wrapped_key_size = ret;
+	if (copy_to_user(u64_to_user_ptr(arg.longterm_wrapped_key_ptr),
+			 longterm_wrapped_key, arg.longterm_wrapped_key_size) ||
+	    copy_to_user(argp, &arg, sizeof(arg))) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = 0;
+out:
+	memzero_explicit(longterm_wrapped_key, sizeof(longterm_wrapped_key));
+	return ret;
+}
+
+static int blk_crypto_ioctl_prepare_key(struct blk_crypto_profile *profile,
+					void __user *argp)
+{
+	struct blk_crypto_prepare_key_arg arg;
+	u8 longterm_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE];
+	u8 ephemerally_wrapped_key[BLK_CRYPTO_MAX_HW_WRAPPED_KEY_SIZE];
+	int ret;
+
+	if (copy_from_user(&arg, argp, sizeof(arg)))
+		return -EFAULT;
+
+	if (memchr_inv(arg.reserved, 0, sizeof(arg.reserved)))
+		return -EINVAL;
+
+	if (arg.longterm_wrapped_key_size > sizeof(longterm_wrapped_key))
+		return -EINVAL;
+	if (copy_from_user(longterm_wrapped_key,
+			   u64_to_user_ptr(arg.longterm_wrapped_key_ptr),
+			   arg.longterm_wrapped_key_size)) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = blk_crypto_prepare_key(profile, longterm_wrapped_key,
+				     arg.longterm_wrapped_key_size,
+				     ephemerally_wrapped_key);
+	if (ret < 0)
+		goto out;
+	if (ret > arg.ephemerally_wrapped_key_size) {
+		ret = -ENOBUFS;
+		goto out;
+	}
+	arg.ephemerally_wrapped_key_size = ret;
+	if (copy_to_user(u64_to_user_ptr(arg.ephemerally_wrapped_key_ptr),
+			 ephemerally_wrapped_key,
+			 arg.ephemerally_wrapped_key_size) ||
+	    copy_to_user(argp, &arg, sizeof(arg))) {
+		ret = -EFAULT;
+		goto out;
+	}
+	ret = 0;
+out:
+	memzero_explicit(longterm_wrapped_key, sizeof(longterm_wrapped_key));
+	memzero_explicit(ephemerally_wrapped_key,
+			 sizeof(ephemerally_wrapped_key));
+	return ret;
+}
+
+int blk_crypto_ioctl(struct block_device *bdev, unsigned int cmd,
+		     void __user *argp)
+{
+	struct blk_crypto_profile *profile =
+		bdev_get_queue(bdev)->crypto_profile;
+
+	if (!profile)
+		return -EOPNOTSUPP;
+
+	switch (cmd) {
+	case BLKCRYPTOIMPORTKEY:
+		return blk_crypto_ioctl_import_key(profile, argp);
+	case BLKCRYPTOGENERATEKEY:
+		return blk_crypto_ioctl_generate_key(profile, argp);
+	case BLKCRYPTOPREPAREKEY:
+		return blk_crypto_ioctl_prepare_key(profile, argp);
+	default:
+		return -ENOTTY;
+	}
+}

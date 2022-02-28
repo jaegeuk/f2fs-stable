@@ -121,6 +121,28 @@ struct fsxattr {
 	unsigned char	fsx_pad[8];
 };
 
+struct blk_crypto_import_key_arg {
+	__u64 raw_key_ptr;
+	__u64 raw_key_size;
+	__u64 longterm_wrapped_key_ptr;
+	__u64 longterm_wrapped_key_size;
+	__u64 reserved[4];
+};
+
+struct blk_crypto_generate_key_arg {
+	__u64 longterm_wrapped_key_ptr;
+	__u64 longterm_wrapped_key_size;
+	__u64 reserved[4];
+};
+
+struct blk_crypto_prepare_key_arg {
+	__u64 longterm_wrapped_key_ptr;
+	__u64 longterm_wrapped_key_size;
+	__u64 ephemerally_wrapped_key_ptr;
+	__u64 ephemerally_wrapped_key_size;
+	__u64 reserved[4];
+};
+
 /*
  * Flags for the fsx_xflags field
  */
@@ -185,6 +207,10 @@ struct fsxattr {
 #define BLKROTATIONAL _IO(0x12,126)
 #define BLKZEROOUT _IO(0x12,127)
 #define BLKGETDISKSEQ _IOR(0x12,128,__u64)
+#define BLKCRYPTOIMPORTKEY _IOWR(0x12, 129, struct blk_crypto_import_key_arg)
+#define BLKCRYPTOGENERATEKEY _IOWR(0x12, 130, struct blk_crypto_generate_key_arg)
+#define BLKCRYPTOPREPAREKEY _IOWR(0x12, 131, struct blk_crypto_prepare_key_arg)
+
 /*
  * A jump here: 130-136 are reserved for zoned block devices
  * (see uapi/linux/blkzoned.h)

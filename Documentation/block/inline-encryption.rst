@@ -487,13 +487,33 @@ keys, when hardware support is available.  This works in the following way:
 blk-crypto-fallback doesn't support hardware-wrapped keys.  Therefore,
 hardware-wrapped keys can only be used with actual inline encryption hardware.
 
-Currently, the kernel only works with hardware-wrapped keys in
-ephemerally-wrapped form.  No generic kernel interfaces are provided for
-generating or importing hardware-wrapped keys in the first place, or converting
-them to ephemerally-wrapped form.  In Android, SoC vendors are required to
-support these operations in their KeyMint implementation (a hardware abstraction
-layer in userspace); for details, see the `Android documentation
-<https://source.android.com/security/encryption/hw-wrapped-keys>`_.
+All the above deals with hardware-wrapped keys in ephemerally-wrapped form only.
+To get such keys in the first place, new block device ioctls have also been
+added to provide a generic interface to creating and preparing such keys:
+
+- ``BLKCRYPTOIMPORTKEY`` converts a raw key to long-term wrapped form.  It takes
+  in a pointer to a ``struct blk_crypto_import_key_arg``.  The caller must set
+  ``raw_key_ptr`` and ``raw_key_size`` to the pointer and size (in bytes) of the
+  raw key to import.  The ioctl will write the resulting long-term wrapped key
+  to the buffer pointed to by ``longterm_wrapped_key_ptr``, which is of maximum
+  size ``longterm_wrapped_key_size``.  It will also update
+  ``longterm_wrapped_key_size`` to be the actual size of the key.  The ioctl
+  will return 0 on success, or will return -1 and set errno on failure.
+
+- ``BLKCRYPTOGENERATEKEY`` is like ``BLKCRYPTOIMPORTKEY``, but it has the
+  hardware generate the key instead of importing one.  It takes in a pointer to
+  a ``struct blk_crypto_generate_key_arg``.
+
+- ``BLKCRYPTOPREPAREKEY`` converts a key from long-term wrapped form to
+  ephemerally-wrapped form.  It takes in a pointer to a
+  ``struct blk_crypto_prepare_key_arg``.  The caller must set
+  ``longterm_wrapped_key_ptr`` and ``longterm_wrapped_key_size`` to the pointer
+  and size (in bytes) of the long-term wrapped key to convert.  The ioctl will
+  write the resulting ephemerally-wrapped key to the buffer pointed to by
+  ``ephemerally_wrapped_key_ptr``, which is of maximum size
+  ``ephemerally_wrapped_key_size``.  It will also update
+  ``ephemerally_wrapped_key_size`` to be the actual size of the key.  The ioctl
+  will return 0 on success, or will return -1 and set errno on failure.
 
 Testability
 -----------

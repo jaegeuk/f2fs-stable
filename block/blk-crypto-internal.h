@@ -61,6 +61,9 @@ static inline bool blk_crypto_rq_is_encrypted(struct request *rq)
 	return rq->crypt_ctx;
 }
 
+int blk_crypto_ioctl(struct block_device *bdev, unsigned int cmd,
+		     void __user *argp);
+
 #else /* CONFIG_BLK_INLINE_ENCRYPTION */
 
 static inline bool bio_crypt_rq_ctx_compatible(struct request *rq,
@@ -92,6 +95,12 @@ static inline void blk_crypto_rq_set_defaults(struct request *rq) { }
 static inline bool blk_crypto_rq_is_encrypted(struct request *rq)
 {
 	return false;
+}
+
+static inline int blk_crypto_ioctl(struct block_device *bdev, unsigned int cmd,
+				   void __user *argp)
+{
+	return -ENOTTY;
 }
 
 #endif /* CONFIG_BLK_INLINE_ENCRYPTION */
