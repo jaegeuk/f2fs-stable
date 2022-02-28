@@ -178,7 +178,8 @@ static bool fscrypt_supported_v2_policy(const struct fscrypt_policy_v2 *policy,
 	if (policy->flags & ~(FSCRYPT_POLICY_FLAGS_PAD_MASK |
 			      FSCRYPT_POLICY_FLAG_DIRECT_KEY |
 			      FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64 |
-			      FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32)) {
+			      FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32 |
+			      FSCRYPT_POLICY_FLAG_HW_WRAPPED_KEY)) {
 		fscrypt_warn(inode, "Unsupported encryption flags (0x%02x)",
 			     policy->flags);
 		return false;
@@ -190,6 +191,14 @@ static bool fscrypt_supported_v2_policy(const struct fscrypt_policy_v2 *policy,
 	if (count > 1) {
 		fscrypt_warn(inode, "Mutually exclusive encryption flags (0x%02x)",
 			     policy->flags);
+		return false;
+	}
+
+	if ((policy->flags & FSCRYPT_POLICY_FLAG_HW_WRAPPED_KEY) &&
+	    !(policy->flags & (FSCRYPT_POLICY_FLAG_IV_INO_LBLK_64 |
+			       FSCRYPT_POLICY_FLAG_IV_INO_LBLK_32))) {
+		fscrypt_warn(inode,
+			     "HW_WRAPPED_KEY flag can only be used with IV_INO_LBLK_64 or IV_INO_LBLK_32");
 		return false;
 	}
 
